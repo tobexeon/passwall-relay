@@ -608,7 +608,7 @@ function get_valid_nodes()
 			end
 			local port = e.port or e.hysteria_hop or e.hysteria2_hop
 			local is_realm = (e.type == "Hysteria2" or e.protocol == 'hysteria2') and e.hysteria2_realms or nil
-			if (port and e.address) or is_realm then
+			if (port and e.address) or is_realm or e.type == "LANForward" then
 				local address = e.address
 				if is_ip(address) or datatypes.hostname(address) or is_realm then
 					if (e.type == "sing-box" or e.type == "Xray") and e.protocol then
@@ -639,7 +639,7 @@ function get_valid_nodes()
 					if is_ipv6(address) then address = get_ipv6_full(address) end
 					type_name = is_realm and type_name .. " Realm" or type_name
 					e["remark"] = trim("%s：[%s]" % {type_name, e.remarks})
-					if show_node_info == "1" then
+					if show_node_info == "1" and e.type ~= "LANForward" then
 						port = (port or ""):gsub(":", "-")
 						if not is_realm then
 							e["remark"] = trim("%s：[%s] %s:%s" % {type_name, e.remarks, address, port})
