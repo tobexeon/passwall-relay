@@ -56,13 +56,10 @@ url_test_node() {
 				[ -n "${_username}" ] && [ -n "${_password}" ] && curlx="socks5h://${_username}:${_password}@${_address}:${_port}"
 			}
 		elif [ "${_type}" == "lanforward" ]; then
-			# LAN 转发出口：内核态 DNAT 转发，无本地代理可测，仅检测与目标设备的 TCP 连通性
+			# LAN 转发出口：目标设备为下一跳网关（无端口语义），探测其 LAN 可达性
 			local _address=$(config_n_get ${node_id} address)
-			local _port=$(config_n_get ${node_id} port)
-			[ -n "${_address}" ] && [ -n "${_port}" ] && {
-				local curlx="http://${_address}:${_port}"
-				local _raw_connect=1
-			}
+			result=$(ping -c 2 -W 2 ${_address} >/dev/null 2>&1 && echo "200:0" || echo "000:0")
+			local _skip_probe=1
 		else
 			local _tmp_port=$(get_new_port 48900 tcp,udp)
 			NO_REC_PROCESS=1 /usr/share/${CONFIG}/app.sh run_socks flag="url_test_${node_id}" node=${node_id} bind=127.0.0.1 socks_port=${_tmp_port} config_file=url_test_${node_id}.json
@@ -70,7 +67,9 @@ url_test_node() {
 		fi
 		sleep 2s
 		local probeUrl=$(config_n_get @global_other[0] url_test_url https://www.google.com/generate_204)
-		if [ -n "${_raw_connect}" ]; then
+		if [ -n "${_skip_probe}" ]; then
+			: # result 已由 ping 探测生成
+		elif [ -n "${_raw_connect}" ]; then
 			result=$(curl --connect-timeout 3 --max-time 5 -o /dev/null -s -w "%{http_code}:%{time_connect}" "${curlx}")
 		else
 			result=$(curl --connect-timeout 3 --max-time 5 -o /dev/null -I -skL -w "%{http_code}:%{time_pretransfer}" -x ${curlx} "${probeUrl}")

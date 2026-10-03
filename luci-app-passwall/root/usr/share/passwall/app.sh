@@ -532,6 +532,41 @@ run_socks() {
 	[ -z "$no_run" ] && [ "${server_host}" != "127.0.0.1" ] && [ "$type" != "sing-box" ] && [ "$type" != "xray" ] && echo "${node}" >> $TMP_PATH/direct_node_list
 }
 
+# LAN 转发出口（策略路由）：fwmark 标记与独立路由表（区别于 TPROXY 的 FWMARK=0x50535731 / table 999）
+LAN_FORWARD_MARK="0x50535732"
+LAN_FORWARD_TABLE="1000"
+
+lan_forward_route_add() {
+	[ -z "${LAN_FORWARD}" ] && return
+	[ -z "${LAN_FORWARD_ADDRESS}" ] && return
+	# 1) 关闭 ICMP Redirect 通告：防止内核向客户端发送“目标直连可达”的 ICMP Redirect，
+	#    导致客户端下次绕过路由器直接访问目标设备（代理失效）。
+	#    必须逐个接口写入 0（conf.all 只改默认值，不影响已存在的接口）。
+	for _f in /proc/sys/net/ipv4/conf/*/send_redirects; do
+		_i=$(basename $(dirname $_f))
+		set_cache_var "SR_${_i}" "$(cat $_f 2>/dev/null)"
+		echo 0 > $_f 2>/dev/null
+	done
+	# 2) 策略路由：fwmark 流量查独立路由表，默认路由指向目标设备（下一跳网关）。
+	#    目的 IP/端口原样保留，目标设备作为透明代理网关（TPROXY/TUN）捕获并还原原始目的。
+	ip rule del fwmark ${LAN_FORWARD_MARK} table ${LAN_FORWARD_TABLE} 2>/dev/null
+	ip rule add fwmark ${LAN_FORWARD_MARK} table ${LAN_FORWARD_TABLE} priority 1000
+	ip route flush table ${LAN_FORWARD_TABLE} 2>/dev/null
+	ip route add default via ${LAN_FORWARD_ADDRESS} table ${LAN_FORWARD_TABLE}
+	echolog "LAN 转发策略路由：fwmark=${LAN_FORWARD_MARK} 查表 ${LAN_FORWARD_TABLE}，默认路由 via ${LAN_FORWARD_ADDRESS}（已关闭 ICMP Redirect）"
+}
+
+lan_forward_route_del() {
+	ip rule del fwmark ${LAN_FORWARD_MARK} table ${LAN_FORWARD_TABLE} 2>/dev/null
+	ip route flush table ${LAN_FORWARD_TABLE} 2>/dev/null
+	# 恢复各接口 send_redirects 原值（幂等：仅恢复曾由本功能保存的值）
+	for _f in /proc/sys/net/ipv4/conf/*/send_redirects; do
+		_i=$(basename $(dirname $_f))
+		_v=$(get_cache_var "SR_${_i}")
+		[ -n "$_v" ] && echo $_v > $_f 2>/dev/null
+	done
+}
+
 start_global() {
 	[ -z "$NODE" ] && return 1
 	local config_file=${GLOBAL_ACL_PATH}/global.json
@@ -594,7 +629,7 @@ start_global() {
 	json_add_string "node" "$NODE"
 
 	local _socks_flag node_socks_flag node_http_flag _socks_address _socks_port _socks_username _socks_password
-	unset LAN_FORWARD LAN_FORWARD_ADDRESS LAN_FORWARD_PORT
+	unset LAN_FORWARD LAN_FORWARD_ADDRESS
 	case "$type" in
 	socks)
 		_socks_flag=1
@@ -612,12 +647,13 @@ start_global() {
 		}
 	;;
 	lanforward)
-		# 内核态 LAN 转发出口：不启动任何本地代理守护进程，
-		# 由 iptables/nftables 直接把代理流量 DNAT 转发到局域网内其他设备（如 10.10.10.10:7890）。
+		# 内核态 LAN 转发出口（策略路由）：不启动任何本地代理守护进程，
+		# 由 iptables/nftables 给代理流量打上 fwmark，
+		# 再经策略路由（ip rule + 独立路由表）把流量原封不动路由到局域网内
+		# 其他设备（下一跳网关，如 10.10.10.10）——全程内核态、无 NAT、不丢失原始目的地址。
 		LAN_FORWARD=1
 		LAN_FORWARD_ADDRESS=$server_host
-		LAN_FORWARD_PORT=$port
-		echolog "全局节点：[$remarks] 使用内核态 LAN 转发出口（不启动本地代理进程）-> ${server_host}:${port}"
+		echolog "全局节点：[$remarks] 使用内核态 LAN 转发出口（策略路由）-> 下一跳 ${server_host}"
 	;;
 	sing-box)
 		local _flag="global"
@@ -1714,6 +1750,7 @@ start() {
 		start_global
 		start_dns
 	}
+	lan_forward_route_add
 	[ -n "$USE_TABLES" ] && source $APP_PATH/${USE_TABLES}.sh start
 	set_cache_var "USE_TABLES" "$USE_TABLES"
 	if [ "$ENABLED_DEFAULT_ACL" = 1 ] || [ "$ENABLED_ACLS" = 1 ]; then
@@ -1748,6 +1785,7 @@ stop() {
 	clean_log
 	eval_cache_var
 	[ -n "$USE_TABLES" ] && source $APP_PATH/${USE_TABLES}.sh stop
+	lan_forward_route_del
 	delete_ip2route
 	# 结束 SS 插件进程
 	# kill_all xray-plugin v2ray-plugin obfs-local shadow-tls

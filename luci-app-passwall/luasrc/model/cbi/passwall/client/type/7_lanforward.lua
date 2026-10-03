@@ -17,18 +17,13 @@ api.set_type_cbi(s)
 o = s:option(Value, "address", translate("Target Device Address (LAN IP)"))
 o.datatype = "ip4addr"
 o.rmempty = false
-o.description = translate("The LAN IP of the device that actually does the proxying (e.g. 10.10.10.10). The kernel (iptables/nftables) will DNAT the proxied traffic directly to this device:port, no local proxy client is started on this router.")
-
-o = s:option(Value, "port", translate("Target Device Port"))
-o.datatype = "port"
-o.rmempty = false
-o.description = translate("The transparent proxy port on the target device. The target device must be able to transparently handle the forwarded traffic (recover the original destination).")
+o.description = translate("The LAN IP of the next-hop gateway that actually does the proxying (e.g. 10.10.10.10). The kernel (iptables/nftables) marks the proxied traffic and policy-routes it to this device through a dedicated routing table -- no NAT, no port rewriting, the original destination is fully preserved. The target device must run a gateway-style transparent proxy (TPROXY/TUN) to capture and restore the original destination. No local proxy client is started on this router.")
 
 o = s:option(ListValue, "protocol", translate("Forward Protocol"))
 o:value("socks", "Socks5")
 o:value("http", "HTTP")
 o.default = "socks"
-o.description = translate("Only used when this node is used in user-space scenarios (e.g. shunt rules, per-ACL nodes). The kernel LAN-forward path ignores this field and forwards raw TCP/UDP.")
+o.description = translate("Only used in user-space fallback scenarios (e.g. shunt rules, per-ACL nodes; default port 1080). The kernel LAN-forward (policy routing) path ignores this field and forwards raw TCP/UDP traffic.")
 o.write = function(self, section, value)
 	if value ~= "socks" and value ~= "http" then value = "socks" end
 	return ListValue.write(self, section, value)

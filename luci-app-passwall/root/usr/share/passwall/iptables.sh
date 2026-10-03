@@ -669,11 +669,11 @@ load_acl() {
 				else
 					msg2="${msg}代理 TCP 使用节点[$(config_n_get $NODE remarks)]"
 				fi
-				if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ] && [ -n "${LAN_FORWARD_PORT}" ]; then
-					# 内核态 LAN 转发出口：不启动本地代理进程，代理流量直接 DNAT 到局域网内目标设备
-					msg2="${msg2}(LAN转发:${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT})"
-					ipt_tmp=$ipt_n
-					ipt_j="-j DNAT --to-destination ${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT}"
+				if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ]; then
+					# 内核态 LAN 转发出口（策略路由）：代理流量打 fwmark，经独立路由表转发给目标设备（下一跳网关），无 NAT
+					msg2="${msg2}(LAN转发:${LAN_FORWARD_ADDRESS})"
+					ipt_tmp=$ipt_m
+					ipt_j="-j MARK --set-mark ${LAN_FORWARD_MARK}"
 				else
 					if [ -n "${is_tproxy}" ]; then
 						msg2="${msg2}(TPROXY:${REDIR_PORT})"
@@ -737,11 +737,11 @@ load_acl() {
 				fi
 				local udp_ipt=$ipt_m
 				local udp_target="-j PSW_RULE"
-				if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ] && [ -n "${LAN_FORWARD_PORT}" ]; then
-					# 内核态 LAN 转发出口：UDP 代理流量直接 DNAT 到局域网内目标设备
-					msg2="${msg2}(LAN转发:${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT})"
-					udp_ipt=$ipt_n
-					udp_target="-j DNAT --to-destination ${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT}"
+				if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ]; then
+					# 内核态 LAN 转发出口（策略路由）：UDP 代理流量打 fwmark，经独立路由表转发给目标设备
+					msg2="${msg2}(LAN转发:${LAN_FORWARD_ADDRESS})"
+					udp_ipt=$ipt_m
+					udp_target="-j MARK --set-mark ${LAN_FORWARD_MARK}"
 				else
 					msg2="${msg2}(TPROXY:${REDIR_PORT})"
 				fi
