@@ -1370,6 +1370,8 @@ add_firewall_rule() {
 					}
 					if [ -z "${is_tproxy}" ]; then
 						nft insert rule $NFTABLE_NAME PSW_OUTPUT_NAT ip protocol tcp ip daddr ${2} tcp dport ${3} $(REDIRECT $REDIR_PORT)
+					elif [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ]; then
+						nft insert rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol tcp ip daddr ${2} tcp dport ${3} counter meta mark set ${LAN_FORWARD_MARK}
 					else
 						nft insert rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol tcp ip daddr ${2} tcp dport ${3} counter jump PSW_RULE
 						nft insert rule $NFTABLE_NAME PSW_MANGLE ip protocol tcp iif lo tcp dport ${3} ip daddr ${2} $(REDIRECT $REDIR_PORT TPROXY4) comment \"本机\"
@@ -1408,7 +1410,10 @@ add_firewall_rule() {
 				nft "add rule $NFTABLE_NAME PSW_ICMP_REDIRECT oif lo meta l4proto icmpv6 counter return"
 			}
 
-			if [ -n "${is_tproxy}" ]; then
+			if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ]; then
+				nft_chain="PSW_OUTPUT_MANGLE"
+				nft_j="counter meta mark set ${LAN_FORWARD_MARK}"
+			elif [ -n "${is_tproxy}" ]; then
 				nft_chain="PSW_OUTPUT_MANGLE"
 				nft_j="counter jump PSW_RULE"
 			else
@@ -1423,9 +1428,9 @@ add_firewall_rule() {
 				[ "${CHN_LIST}" != "0" ] && nft_rule_dual "$nft_chain" "ip protocol tcp ip daddr" "$NFTSET_CHN" "$(factor $TCP_REDIR_PORTS "tcp dport") $(get_jump_nft ${CHN_LIST} "${nft_j}")"
 				[ "${USE_SHUNT_NODE}" = "1" ] && nft_rule_dual "$nft_chain" "ip protocol tcp ip daddr" "$NFTSET_SHUNT" "$(factor $TCP_REDIR_PORTS "tcp dport") ${nft_j}"
 				[ "${LOCALHOST_TCP_PROXY_MODE}" != "disable" ] && nft "add rule $NFTABLE_NAME $nft_chain ip protocol tcp $(factor $TCP_REDIR_PORTS "tcp dport") ${nft_j}"
-				[ -n "${is_tproxy}" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol tcp iif lo $(REDIRECT $REDIR_PORT TPROXY4) comment \"本机\""
+				[ -n "${is_tproxy}" ] && [ -z "${LAN_FORWARD}" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol tcp iif lo $(REDIRECT $REDIR_PORT TPROXY4) comment \"本机\""
 			}
-			[ -n "${is_tproxy}" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol tcp iif lo counter return comment \"本机\""
+			[ -n "${is_tproxy}" ] && [ -z "${LAN_FORWARD}" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol tcp iif lo counter return comment \"本机\""
 			[ -n "${is_tproxy}" ] && nft "add rule $NFTABLE_NAME mangle_output ip protocol tcp counter jump PSW_OUTPUT_MANGLE comment \"PSW_OUTPUT_MANGLE\""
 			[ -z "${is_tproxy}" ] && nft "add rule $NFTABLE_NAME nat_output ip protocol tcp counter jump PSW_OUTPUT_NAT"
 
@@ -1453,8 +1458,12 @@ add_firewall_rule() {
 						echolog "  - 上游 DNS 服务器 ${2} 已在直接访问的列表中，不强制向 UDP 代理转发对该服务器 UDP/${3} 端口的访问"
 						return 0
 					}
-					nft "insert rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol udp ip daddr ${2} udp dport ${3} counter jump PSW_RULE"
-					nft "insert rule $NFTABLE_NAME PSW_MANGLE ip protocol udp iif lo ip daddr ${2} $(REDIRECT $REDIR_PORT TPROXY4) comment \"本机\""
+					if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ]; then
+						nft insert rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol udp ip daddr ${2} udp dport ${3} counter meta mark set ${LAN_FORWARD_MARK}
+					else
+						nft insert rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol udp ip daddr ${2} udp dport ${3} counter jump PSW_RULE
+						nft insert rule $NFTABLE_NAME PSW_MANGLE ip protocol udp iif lo ip daddr ${2} $(REDIRECT $REDIR_PORT TPROXY4) comment \"本机\"
+					fi
 					echolog "  - [$?]将上游 DNS 服务器 ${2}:${3} 加入到路由器自身代理的 UDP 转发链"
 				else
 					nft "get element $NFTABLE_NAME $NFTSET_LAN6 {${2}}" &>/dev/null
@@ -1468,14 +1477,16 @@ add_firewall_rule() {
 				fi
 			}
 			[ -n "${UDP_PROXY_DNS}" ] && hosts_foreach REMOTE_DNS _proxy_udp_access 53
+			local udp_j="counter jump PSW_RULE"
+			[ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ] && udp_j="counter meta mark set ${LAN_FORWARD_MARK}"
 			[ -n "${LOCALHOST_UDP_PROXY_MODE}" ] && {
-				[ "${USE_FAKEDNS}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol udp ip daddr $FAKE_IP counter jump PSW_RULE"
-				[ "${USE_PROXY_LIST}" = "1" ] && nft_rule_dual "PSW_OUTPUT_MANGLE" "ip protocol udp ip daddr" "$NFTSET_BLACK" "$(factor $UDP_REDIR_PORTS "udp dport") counter jump PSW_RULE"
-				[ "${USE_GFW_LIST}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol udp ip daddr @$NFTSET_GFW $(factor $UDP_REDIR_PORTS "udp dport") counter jump PSW_RULE"
-				[ "${CHN_LIST}" != "0" ] && nft_rule_dual "PSW_OUTPUT_MANGLE" "ip protocol udp ip daddr" "$NFTSET_CHN" "$(factor $UDP_REDIR_PORTS "udp dport") $(get_jump_nft ${CHN_LIST} "counter jump PSW_RULE")"
-				[ "${USE_SHUNT_NODE}" = "1" ] && nft_rule_dual "PSW_OUTPUT_MANGLE" "ip protocol udp ip daddr" "$NFTSET_SHUNT" "$(factor $UDP_REDIR_PORTS "udp dport") counter jump PSW_RULE"
-				[ "${LOCALHOST_UDP_PROXY_MODE}" != "disable" ] && nft "add rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") counter jump PSW_RULE"
-				nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp iif lo $(REDIRECT $REDIR_PORT TPROXY4) comment \"本机\""
+				[ "${USE_FAKEDNS}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol udp ip daddr $FAKE_IP ${udp_j}"
+				[ "${USE_PROXY_LIST}" = "1" ] && nft_rule_dual "PSW_OUTPUT_MANGLE" "ip protocol udp ip daddr" "$NFTSET_BLACK" "$(factor $UDP_REDIR_PORTS "udp dport") ${udp_j}"
+				[ "${USE_GFW_LIST}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol udp ip daddr @$NFTSET_GFW $(factor $UDP_REDIR_PORTS "udp dport") ${udp_j}"
+				[ "${CHN_LIST}" != "0" ] && nft_rule_dual "PSW_OUTPUT_MANGLE" "ip protocol udp ip daddr" "$NFTSET_CHN" "$(factor $UDP_REDIR_PORTS "udp dport") $(get_jump_nft ${CHN_LIST} "${udp_j}")"
+				[ "${USE_SHUNT_NODE}" = "1" ] && nft_rule_dual "PSW_OUTPUT_MANGLE" "ip protocol udp ip daddr" "$NFTSET_SHUNT" "$(factor $UDP_REDIR_PORTS "udp dport") ${udp_j}"
+				[ "${LOCALHOST_UDP_PROXY_MODE}" != "disable" ] && nft "add rule $NFTABLE_NAME PSW_OUTPUT_MANGLE ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ${udp_j}"
+				[ -z "${LAN_FORWARD}" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp iif lo $(REDIRECT $REDIR_PORT TPROXY4) comment \"本机\""
 			}
 			nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp iif lo counter return comment \"本机\""
 			nft "add rule $NFTABLE_NAME mangle_output ip protocol udp counter jump PSW_OUTPUT_MANGLE comment \"PSW_OUTPUT_MANGLE\""

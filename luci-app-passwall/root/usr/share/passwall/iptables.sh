@@ -1284,6 +1284,8 @@ add_firewall_rule() {
 					}
 					if [ -z "${is_tproxy}" ]; then
 						$ipt_n -I PSW_OUTPUT -p tcp -d ${2} --dport ${3} $(REDIRECT $REDIR_PORT)
+					elif [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ]; then
+						$ipt_m -I PSW_OUTPUT -p tcp -d ${2} --dport ${3} -j MARK --set-mark ${LAN_FORWARD_MARK}
 					else
 						$ipt_m -I PSW_OUTPUT -p tcp -d ${2} --dport ${3} -j PSW_RULE
 						$ipt_m -I PSW $(comment "本机") -p tcp -i lo -d ${2} --dport ${3} $(REDIRECT $REDIR_PORT TPROXY)
@@ -1329,7 +1331,7 @@ add_firewall_rule() {
 				[ "${CHN_LIST}" != "0" ] && add_port_rules "$ipt_tmp -A PSW_OUTPUT -p tcp" $TCP_REDIR_PORTS "$(dst $IPSET_CHN) $(get_jump_ipt ${CHN_LIST} "${ipt_j}")"
 				[ "${USE_SHUNT_NODE}" = "1" ] && add_port_rules "$ipt_tmp -A PSW_OUTPUT -p tcp" $TCP_REDIR_PORTS "$(dst $IPSET_SHUNT) ${ipt_j}"
 				[ "${LOCALHOST_TCP_PROXY_MODE}" != "disable" ] && add_port_rules "$ipt_tmp -A PSW_OUTPUT -p tcp" $TCP_REDIR_PORTS "${ipt_j}"
-				[ -n "${is_tproxy}" ] && $ipt_m -A PSW $(comment "本机") -p tcp -i lo $(REDIRECT $REDIR_PORT TPROXY)
+				[ -n "${is_tproxy}" ] && [ -z "${LAN_FORWARD}" ] && $ipt_m -A PSW $(comment "本机") -p tcp -i lo $(REDIRECT $REDIR_PORT TPROXY)
 			}
 			[ -z "${is_tproxy}" ] && $ipt_n -A OUTPUT -p tcp -j PSW_OUTPUT
 			[ -n "${is_tproxy}" ] && {
@@ -1362,8 +1364,12 @@ add_firewall_rule() {
 						echolog "  - 上游 DNS 服务器 ${2} 已在直接访问的列表中，不强制向 UDP 代理转发对该服务器 UDP/${3} 端口的访问"
 						return 0
 					}
-					$ipt_m -I PSW_OUTPUT -p udp -d ${2} --dport ${3} -j PSW_RULE
-					$ipt_m -I PSW $(comment "本机") -p udp -i lo -d ${2} --dport ${3} $(REDIRECT $REDIR_PORT TPROXY)
+					if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ]; then
+						$ipt_m -I PSW_OUTPUT -p udp -d ${2} --dport ${3} -j MARK --set-mark ${LAN_FORWARD_MARK}
+					else
+						$ipt_m -I PSW_OUTPUT -p udp -d ${2} --dport ${3} -j PSW_RULE
+						$ipt_m -I PSW $(comment "本机") -p udp -i lo -d ${2} --dport ${3} $(REDIRECT $REDIR_PORT TPROXY)
+					fi
 					echolog "  - [$?]将上游 DNS 服务器 ${2}:${3} 加入到路由器自身代理的 UDP 转发链"
 				else
 					ipset -q test $IPSET_LAN6 ${2}
@@ -1377,14 +1383,16 @@ add_firewall_rule() {
 				fi
 			}
 			[ -n "${UDP_PROXY_DNS}" ] && hosts_foreach REMOTE_DNS _proxy_udp_access 53
+			local udp_output_target="-j PSW_RULE"
+			[ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ] && udp_output_target="-j MARK --set-mark ${LAN_FORWARD_MARK}"
 			[ -n "${LOCALHOST_UDP_PROXY_MODE}" ] && {
-				[ "${USE_FAKEDNS}" = "1" ] && $ipt_m -A PSW_OUTPUT -p udp -d $FAKE_IP -j PSW_RULE
-				[ "${USE_PROXY_LIST}" = "1" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_BLACK) -j PSW_RULE"
-				[ "${USE_GFW_LIST}" = "1" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_GFW) -j PSW_RULE"
-				[ "${CHN_LIST}" != "0" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_CHN) $(get_jump_ipt ${CHN_LIST} "-j PSW_RULE")"
-				[ "${USE_SHUNT_NODE}" = "1" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_SHUNT) -j PSW_RULE"
-				[ "${LOCALHOST_UDP_PROXY_MODE}" != "disable" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "-j PSW_RULE"
-				$ipt_m -A PSW $(comment "本机") -p udp -i lo $(REDIRECT $REDIR_PORT TPROXY)
+				[ "${USE_FAKEDNS}" = "1" ] && $ipt_m -A PSW_OUTPUT -p udp -d $FAKE_IP ${udp_output_target}
+				[ "${USE_PROXY_LIST}" = "1" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_BLACK) ${udp_output_target}"
+				[ "${USE_GFW_LIST}" = "1" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_GFW) ${udp_output_target}"
+				[ "${CHN_LIST}" != "0" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_CHN) $(get_jump_ipt ${CHN_LIST} "${udp_output_target}")"
+				[ "${USE_SHUNT_NODE}" = "1" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_SHUNT) ${udp_output_target}"
+				[ "${LOCALHOST_UDP_PROXY_MODE}" != "disable" ] && add_port_rules "$ipt_m -A PSW_OUTPUT -p udp" $UDP_REDIR_PORTS "${udp_output_target}"
+				[ -z "${LAN_FORWARD}" ] && $ipt_m -A PSW $(comment "本机") -p udp -i lo $(REDIRECT $REDIR_PORT TPROXY)
 			}
 			$ipt_m -A PSW $(comment "本机") -p udp -i lo -j RETURN
 			insert_rule_before "$ipt_m" "OUTPUT" "mwan3" "$(comment mangle-OUTPUT-PSW) -p udp -j PSW_OUTPUT"
