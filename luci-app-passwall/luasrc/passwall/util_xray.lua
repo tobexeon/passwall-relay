@@ -54,6 +54,12 @@ function gen_outbound(flag, node, tag, proxy_table)
 			if node.type == "Socks" then
 				node.protocol = "socks"
 				node.transport = "raw"
+			elseif node.type == "LANForward" then
+				-- LAN 转发出口：直接把出站指到局域网内其他设备（如 10.10.10.10）上运行的代理服务（Socks5/HTTP）
+				if node.protocol ~= "socks" and node.protocol ~= "http" then
+					node.protocol = "socks"
+				end
+				node.transport = "raw"
 			else
 				local new_port
 				local run_socks_instance = true

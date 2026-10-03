@@ -588,12 +588,13 @@ start_global() {
 	elif [ "${TCP_PROXY_WAY}" = "tproxy" ]; then
 		can_ipt=$(echo "$TPROXY_LIST" | grep "$type")
 	fi
-	[ -z "$can_ipt" ] && type="socks"
+	[ -z "$can_ipt" ] && [ "$type" != "lanforward" ] && type="socks"
 
 	json_init
 	json_add_string "node" "$NODE"
 
 	local _socks_flag node_socks_flag node_http_flag _socks_address _socks_port _socks_username _socks_password
+	unset LAN_FORWARD LAN_FORWARD_ADDRESS LAN_FORWARD_PORT
 	case "$type" in
 	socks)
 		_socks_flag=1
@@ -609,6 +610,14 @@ start_global() {
 			unset _socks_username
 			unset _socks_password
 		}
+	;;
+	lanforward)
+		# 内核态 LAN 转发出口：不启动任何本地代理守护进程，
+		# 由 iptables/nftables 直接把代理流量 DNAT 转发到局域网内其他设备（如 10.10.10.10:7890）。
+		LAN_FORWARD=1
+		LAN_FORWARD_ADDRESS=$server_host
+		LAN_FORWARD_PORT=$port
+		echolog "全局节点：[$remarks] 使用内核态 LAN 转发出口（不启动本地代理进程）-> ${server_host}:${port}"
 	;;
 	sing-box)
 		local _flag="global"
@@ -1621,7 +1630,7 @@ acl_app() {
 								set_cache_var "acl_node_${node}_enable_log" "1"
 							}
 
-							if [ "${type}" = "sing-box" ] || [ "${type}" = "xray" ]; then
+							if [ "${type}" = "sing-box" ] || [ "${type}" = "xray" ] || [ "${type}" = "lanforward" ]; then
 								config_file="acl/${node}_${redir_port}.json"
 								_extra_param="socks_address=127.0.0.1 socks_port=$socks_port"
 								[ "${type}" = "${dns_mode}" ] && {
@@ -1838,8 +1847,8 @@ get_config() {
 	FILTER_PROXY_IPV6=$(config_n_get @global[0] filter_proxy_ipv6 0)
 	DNS_REDIRECT=$(config_n_get @global[0] dns_redirect 1)
 
-	REDIRECT_LIST="socks ss-rust ssr sing-box xray naiveproxy hysteria2"
-	TPROXY_LIST="socks ss-rust ssr sing-box xray hysteria2"
+	REDIRECT_LIST="socks ss-rust ssr sing-box xray naiveproxy hysteria2 lanforward"
+	TPROXY_LIST="socks ss-rust ssr sing-box xray hysteria2 lanforward"
 
 	NEXT_DNS_LISTEN_PORT=15353
 	TUN_DNS="127.0.0.1#${NEXT_DNS_LISTEN_PORT}"

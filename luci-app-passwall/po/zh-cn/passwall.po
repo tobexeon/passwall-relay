@@ -2168,3 +2168,25 @@ msgstr "配置支持的密码套件列表，以冒号 (:) 分隔。"
 
 msgid "Connection Reuse"
 msgstr "连接复用"
+
+
+msgid "LAN Forward"
+msgstr "LAN 转发"
+
+msgid "Target Device Address (LAN IP)"
+msgstr "目标设备地址（局域网 IP）"
+
+msgid "Target Device Port"
+msgstr "目标设备端口"
+
+msgid "Forward Protocol"
+msgstr "转发协议"
+
+msgid "The LAN IP of the device that actually does the proxying (e.g. 10.10.10.10). The kernel (iptables/nftables) will DNAT the proxied traffic directly to this device:port, no local proxy client is started on this router."
+msgstr "实际承担代理转发工作的局域网设备 IP（如 10.10.10.10）。内核（iptables/nftables）将把代理流量直接 DNAT 转发到该设备:端口，本机不启动本地代理客户端。"
+
+msgid "The transparent proxy port on the target device. The target device must be able to transparently handle the forwarded traffic (recover the original destination)."
+msgstr "目标设备上的透明代理端口。目标设备必须能透明处理被转发过来的流量（还原原始目的地址）。"
+
+msgid "Only used when this node is used in user-space scenarios (e.g. shunt rules, per-ACL nodes). The kernel LAN-forward path ignores this field and forwards raw TCP/UDP."
+msgstr "仅当该节点被用于用户态场景（如分流规则、访问控制节点）时生效。内核 LAN 转发路径忽略此字段，直接转发原始 TCP/UDP。"

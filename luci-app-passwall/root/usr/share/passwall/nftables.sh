@@ -724,17 +724,24 @@ load_acl() {
 				else
 					msg2="${msg}代理 TCP 使用节点[$(config_n_get $NODE remarks)]"
 				fi
-				if [ -n "${is_tproxy}" ]; then
-					msg2="${msg2}(TPROXY:${REDIR_PORT})"
-					nft_chain="PSW_MANGLE"
-					nft_j="counter jump PSW_RULE"
-				else
-					msg2="${msg2}(REDIRECT:${REDIR_PORT})"
+				if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ] && [ -n "${LAN_FORWARD_PORT}" ]; then
+					# 内核态 LAN 转发出口：不启动本地代理进程，代理流量直接 DNAT 到局域网内目标设备
+					msg2="${msg2}(LAN转发:${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT})"
 					nft_chain="PSW_NAT"
-					nft_j="$(REDIRECT $REDIR_PORT)"
+					nft_j="counter ip dnat to ${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT}"
+				else
+					if [ -n "${is_tproxy}" ]; then
+						msg2="${msg2}(TPROXY:${REDIR_PORT})"
+						nft_chain="PSW_MANGLE"
+						nft_j="counter jump PSW_RULE"
+					else
+						msg2="${msg2}(REDIRECT:${REDIR_PORT})"
+						nft_chain="PSW_NAT"
+						nft_j="$(REDIRECT $REDIR_PORT)"
+					fi
 				fi
 
-				[ "$accept_icmp" = "1" ] && {
+				[ "$accept_icmp" = "1" ] && [ -z "${LAN_FORWARD}" ] && {
 					[ "${USE_DIRECT_LIST}" = "1" ] && nft_rule_dual "PSW_ICMP_REDIRECT" "ip daddr" "$NFTSET_WHITE" "counter return comment \"默认\""
 					[ "${USE_FAKEDNS}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_ICMP_REDIRECT ip protocol icmp ip daddr $FAKE_IP $(REDIRECT) comment \"默认\""
 					[ "${USE_PROXY_LIST}" = "1" ] && nft_rule_dual "PSW_ICMP_REDIRECT" "ip protocol icmp ip daddr" "$NFTSET_BLACK" "$(REDIRECT) comment \"默认\""
@@ -745,7 +752,7 @@ load_acl() {
 					nft "add rule $NFTABLE_NAME PSW_ICMP_REDIRECT ip protocol icmp return comment \"默认\""
 				}
 
-				[ "$accept_icmpv6" = "1" ] && [ "$PROXY_IPV6" = "1" ] && {
+				[ "$accept_icmpv6" = "1" ] && [ "$PROXY_IPV6" = "1" ] && [ -z "${LAN_FORWARD}" ] && {
 					[ "${USE_DIRECT_LIST}" = "1" ] && nft_rule_dual "PSW_ICMP_REDIRECT" "ip6 daddr" "$NFTSET_WHITE6" "counter return comment \"默认\""
 					[ "${USE_FAKEDNS}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_ICMP_REDIRECT meta l4proto icmpv6 ip6 daddr $FAKE_IP_6 $(REDIRECT) comment \"默认\""
 					[ "${USE_PROXY_LIST}" = "1" ] && nft_rule_dual "PSW_ICMP_REDIRECT" "meta l4proto icmpv6 ip6 daddr" "$NFTSET_BLACK6" "$(REDIRECT) comment \"默认\""
@@ -762,10 +769,10 @@ load_acl() {
 				[ "${CHN_LIST}" != "0" ] && nft_rule_dual "$nft_chain" "ip protocol tcp $(factor $TCP_REDIR_PORTS "tcp dport") ip daddr" "$NFTSET_CHN" "$(get_jump_nft ${CHN_LIST} "${nft_j}") comment \"默认\""
 				[ "${USE_SHUNT_NODE}" = "1" ] && nft_rule_dual "$nft_chain" "ip protocol tcp $(factor $TCP_REDIR_PORTS "tcp dport") ip daddr" "$NFTSET_SHUNT" "${nft_j} comment \"默认\""
 				[ "${TCP_PROXY_MODE}" != "disable" ] && nft "add rule $NFTABLE_NAME $nft_chain ip protocol tcp $(factor $TCP_REDIR_PORTS "tcp dport") ${nft_j} comment \"默认\""
-				[ -n "${is_tproxy}" ] && nft "add rule $NFTABLE_NAME $nft_chain ip protocol tcp $(REDIRECT $REDIR_PORT TPROXY4) comment \"默认\""
+				[ -n "${is_tproxy}" ] && [ -z "${LAN_FORWARD}" ] && nft "add rule $NFTABLE_NAME $nft_chain ip protocol tcp $(REDIRECT $REDIR_PORT TPROXY4) comment \"默认\""
 				nft "add rule $NFTABLE_NAME $nft_chain ip protocol tcp counter return comment \"默认\""
 
-				[ "$PROXY_IPV6" = "1" ] && {
+				[ "$PROXY_IPV6" = "1" ] && [ -z "${LAN_FORWARD}" ] && {
 					[ "${USE_FAKEDNS}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE_V6 meta l4proto tcp ip6 daddr $FAKE_IP_6 counter jump PSW_RULE comment \"默认\""
 					[ "${USE_PROXY_LIST}" = "1" ] && nft_rule_dual "PSW_MANGLE_V6" "meta l4proto tcp $(factor $TCP_REDIR_PORTS "tcp dport") ip6 daddr" "$NFTSET_BLACK6" "counter jump PSW_RULE comment \"默认\""
 					[ "${USE_GFW_LIST}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE_V6 meta l4proto tcp $(factor $TCP_REDIR_PORTS "tcp dport") ip6 daddr @$NFTSET_GFW6 counter jump PSW_RULE comment \"默认\""
@@ -784,21 +791,31 @@ load_acl() {
 		if [ -n "${UDP_PROXY_MODE}" ]; then
 			[ -n "$NODE" ] && {
 				if [ "$(config_get_type $NODE)" = "socks" ]; then
-					msg2="${msg}代理 UDP 使用节点[Socks 配置($(config_n_get $NODE port) 端口)](TPROXY:${REDIR_PORT})"
+					msg2="${msg}代理 UDP 使用节点[Socks 配置($(config_n_get $NODE port) 端口)]"
 				else
-					msg2="${msg}代理 UDP 使用节点[$(config_n_get $NODE remarks)](TPROXY:${REDIR_PORT})"
+					msg2="${msg}代理 UDP 使用节点[$(config_n_get $NODE remarks)]"
+				fi
+				local udp_chain="PSW_MANGLE"
+				local udp_j="counter jump PSW_RULE"
+				if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ] && [ -n "${LAN_FORWARD_PORT}" ]; then
+					# 内核态 LAN 转发出口：UDP 代理流量直接 DNAT 到局域网内目标设备
+					msg2="${msg2}(LAN转发:${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT})"
+					udp_chain="PSW_NAT"
+					udp_j="counter ip dnat to ${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT}"
+				else
+					msg2="${msg2}(TPROXY:${REDIR_PORT})"
 				fi
 
-				[ "${USE_FAKEDNS}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp ip daddr $FAKE_IP counter jump PSW_RULE comment \"默认\""
-				[ "${USE_PROXY_LIST}" = "1" ] && nft_rule_dual "PSW_MANGLE" "ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ip daddr" "$NFTSET_BLACK" "counter jump PSW_RULE comment \"默认\""
-				[ "${USE_GFW_LIST}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ip daddr @$NFTSET_GFW counter jump PSW_RULE comment \"默认\""
-				[ "${CHN_LIST}" != "0" ] && nft_rule_dual "PSW_MANGLE" "ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ip daddr" "$NFTSET_CHN" "$(get_jump_nft ${CHN_LIST} "counter jump PSW_RULE") comment \"默认\""
-				[ "${USE_SHUNT_NODE}" = "1" ] && nft_rule_dual "PSW_MANGLE" "ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ip daddr" "$NFTSET_SHUNT" "counter jump PSW_RULE comment \"默认\""
-				[ "${UDP_PROXY_MODE}" != "disable" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") counter jump PSW_RULE comment \"默认\""
-				nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp $(REDIRECT $REDIR_PORT TPROXY4) comment \"默认\""
-				nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp counter return comment \"默认\""
+				[ "${USE_FAKEDNS}" = "1" ] && nft "add rule $NFTABLE_NAME $udp_chain ip protocol udp ip daddr $FAKE_IP ${udp_j} comment \"默认\""
+				[ "${USE_PROXY_LIST}" = "1" ] && nft_rule_dual "$udp_chain" "ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ip daddr" "$NFTSET_BLACK" "${udp_j} comment \"默认\""
+				[ "${USE_GFW_LIST}" = "1" ] && nft "add rule $NFTABLE_NAME $udp_chain ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ip daddr @$NFTSET_GFW ${udp_j} comment \"默认\""
+				[ "${CHN_LIST}" != "0" ] && nft_rule_dual "$udp_chain" "ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ip daddr" "$NFTSET_CHN" "$(get_jump_nft ${CHN_LIST} "${udp_j}") comment \"默认\""
+				[ "${USE_SHUNT_NODE}" = "1" ] && nft_rule_dual "$udp_chain" "ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ip daddr" "$NFTSET_SHUNT" "${udp_j} comment \"默认\""
+				[ "${UDP_PROXY_MODE}" != "disable" ] && nft "add rule $NFTABLE_NAME $udp_chain ip protocol udp $(factor $UDP_REDIR_PORTS "udp dport") ${udp_j} comment \"默认\""
+				[ -z "${LAN_FORWARD}" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp $(REDIRECT $REDIR_PORT TPROXY4) comment \"默认\""
+				nft "add rule $NFTABLE_NAME $udp_chain ip protocol udp counter return comment \"默认\""
 
-				[ "$PROXY_IPV6" = "1" ] && {
+				[ "$PROXY_IPV6" = "1" ] && [ -z "${LAN_FORWARD}" ] && {
 					[ "${USE_FAKEDNS}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE_V6 meta l4proto udp ip6 daddr $FAKE_IP_6 counter jump PSW_RULE comment \"默认\""
 					[ "${USE_PROXY_LIST}" = "1" ] && nft_rule_dual "PSW_MANGLE_V6" "meta l4proto udp $(factor $UDP_REDIR_PORTS "udp dport") ip6 daddr" "$NFTSET_BLACK6" "counter jump PSW_RULE comment \"默认\""
 					[ "${USE_GFW_LIST}" = "1" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE_V6 meta l4proto udp $(factor $UDP_REDIR_PORTS "udp dport") ip6 daddr @$NFTSET_GFW6 counter jump PSW_RULE comment \"默认\""

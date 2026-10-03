@@ -669,15 +669,22 @@ load_acl() {
 				else
 					msg2="${msg}代理 TCP 使用节点[$(config_n_get $NODE remarks)]"
 				fi
-				if [ -n "${is_tproxy}" ]; then
-					msg2="${msg2}(TPROXY:${REDIR_PORT})"
-					ipt_j="-j PSW_RULE"
+				if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ] && [ -n "${LAN_FORWARD_PORT}" ]; then
+					# 内核态 LAN 转发出口：不启动本地代理进程，代理流量直接 DNAT 到局域网内目标设备
+					msg2="${msg2}(LAN转发:${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT})"
+					ipt_tmp=$ipt_n
+					ipt_j="-j DNAT --to-destination ${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT}"
 				else
-					msg2="${msg2}(REDIRECT:${REDIR_PORT})"
-					ipt_j="$(REDIRECT $REDIR_PORT)"
+					if [ -n "${is_tproxy}" ]; then
+						msg2="${msg2}(TPROXY:${REDIR_PORT})"
+						ipt_j="-j PSW_RULE"
+					else
+						msg2="${msg2}(REDIRECT:${REDIR_PORT})"
+						ipt_j="$(REDIRECT $REDIR_PORT)"
+					fi
 				fi
 
-				[ "$accept_icmp" = "1" ] && {
+				[ "$accept_icmp" = "1" ] && [ -z "${LAN_FORWARD}" ] && {
 					[ "${USE_FAKEDNS}" = "1" ] && $ipt_n -A PSW $(comment "默认") -p icmp -d $FAKE_IP $(REDIRECT)
 					[ "${USE_PROXY_LIST}" = "1" ] && $ipt_n -A PSW $(comment "默认") -p icmp $(dst $IPSET_BLACK) $(REDIRECT)
 					[ "${USE_GFW_LIST}" = "1" ] && $ipt_n -A PSW $(comment "默认") -p icmp $(dst $IPSET_GFW) $(REDIRECT)
@@ -686,7 +693,7 @@ load_acl() {
 					[ "${TCP_PROXY_MODE}" != "disable" ] && $ipt_n -A PSW $(comment "默认") -p icmp $(REDIRECT)
 				}
 
-				[ "$accept_icmpv6" = "1" ] && [ "$PROXY_IPV6" = "1" ] && {
+				[ "$accept_icmpv6" = "1" ] && [ "$PROXY_IPV6" = "1" ] && [ -z "${LAN_FORWARD}" ] && {
 					[ "${USE_FAKEDNS}" = "1" ] && $ip6t_n -A PSW $(comment "默认") -p ipv6-icmp -d $FAKE_IP_6 $(REDIRECT)
 					[ "${USE_PROXY_LIST}" = "1" ] && $ip6t_n -A PSW $(comment "默认") -p ipv6-icmp $(dst $IPSET_BLACK6) $(REDIRECT)
 					[ "${USE_GFW_LIST}" = "1" ] && $ip6t_n -A PSW $(comment "默认") -p ipv6-icmp $(dst $IPSET_GFW6) $(REDIRECT)
@@ -701,9 +708,9 @@ load_acl() {
 				[ "${CHN_LIST}" != "0" ] && add_port_rules "$ipt_tmp -A PSW $(comment "默认") -p tcp" $TCP_REDIR_PORTS "$(dst $IPSET_CHN) $(get_jump_ipt ${CHN_LIST} "${ipt_j}")"
 				[ "${USE_SHUNT_NODE}" = "1" ] && add_port_rules "$ipt_tmp -A PSW $(comment "默认") -p tcp" $TCP_REDIR_PORTS "$(dst $IPSET_SHUNT) ${ipt_j}"
 				[ "${TCP_PROXY_MODE}" != "disable" ] && add_port_rules "$ipt_tmp -A PSW $(comment "默认") -p tcp" $TCP_REDIR_PORTS "${ipt_j}"
-				[ -n "${is_tproxy}" ]&& $ipt_tmp -A PSW $(comment "默认") -p tcp $(REDIRECT $REDIR_PORT TPROXY)
+				[ -n "${is_tproxy}" ] && [ -z "${LAN_FORWARD}" ] && $ipt_tmp -A PSW $(comment "默认") -p tcp $(REDIRECT $REDIR_PORT TPROXY)
 
-				[ "$PROXY_IPV6" = "1" ] && {
+				[ "$PROXY_IPV6" = "1" ] && [ -z "${LAN_FORWARD}" ] && {
 					[ "${USE_FAKEDNS}" = "1" ] && $ip6t_m -A PSW $(comment "默认") -p tcp -d $FAKE_IP_6 -j PSW_RULE
 					[ "${USE_PROXY_LIST}" = "1" ] && add_port_rules "$ip6t_m -A PSW $(comment "默认") -p tcp" $TCP_REDIR_PORTS "$(dst $IPSET_BLACK6) -j PSW_RULE"
 					[ "${USE_GFW_LIST}" = "1" ] && add_port_rules "$ip6t_m -A PSW $(comment "默认") -p tcp" $TCP_REDIR_PORTS "$(dst $IPSET_GFW6) -j PSW_RULE"
@@ -724,20 +731,30 @@ load_acl() {
 		if [ -n "${UDP_PROXY_MODE}" ]; then
 			[ -n "$NODE" ] && {
 				if [ "$(config_get_type $NODE)" = "socks" ]; then
-					msg2="${msg}代理 UDP 使用节点[Socks 配置($(config_n_get $NODE port) 端口)](TPROXY:${REDIR_PORT})"
+					msg2="${msg}代理 UDP 使用节点[Socks 配置($(config_n_get $NODE port) 端口)]"
 				else
-					msg2="${msg}代理 UDP 使用节点[$(config_n_get $NODE remarks)](TPROXY:${REDIR_PORT})"
+					msg2="${msg}代理 UDP 使用节点[$(config_n_get $NODE remarks)]"
+				fi
+				local udp_ipt=$ipt_m
+				local udp_target="-j PSW_RULE"
+				if [ -n "${LAN_FORWARD}" ] && [ -n "${LAN_FORWARD_ADDRESS}" ] && [ -n "${LAN_FORWARD_PORT}" ]; then
+					# 内核态 LAN 转发出口：UDP 代理流量直接 DNAT 到局域网内目标设备
+					msg2="${msg2}(LAN转发:${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT})"
+					udp_ipt=$ipt_n
+					udp_target="-j DNAT --to-destination ${LAN_FORWARD_ADDRESS}:${LAN_FORWARD_PORT}"
+				else
+					msg2="${msg2}(TPROXY:${REDIR_PORT})"
 				fi
 
-				[ "${USE_FAKEDNS}" = "1" ] && $ipt_m -A PSW $(comment "默认") -p udp -d $FAKE_IP -j PSW_RULE
-				[ "${USE_PROXY_LIST}" = "1" ] && add_port_rules "$ipt_m -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_BLACK) -j PSW_RULE"
-				[ "${USE_GFW_LIST}" = "1" ] && add_port_rules "$ipt_m -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_GFW) -j PSW_RULE"
-				[ "${CHN_LIST}" != "0" ] && add_port_rules "$ipt_m -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_CHN) $(get_jump_ipt ${CHN_LIST} "-j PSW_RULE")"
-				[ "${USE_SHUNT_NODE}" = "1" ] && add_port_rules "$ipt_m -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_SHUNT) -j PSW_RULE"
-				[ "${UDP_PROXY_MODE}" != "disable" ] && add_port_rules "$ipt_m -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "-j PSW_RULE"
-				$ipt_m -A PSW $(comment "默认") -p udp $(REDIRECT $REDIR_PORT TPROXY)
+				[ "${USE_FAKEDNS}" = "1" ] && $udp_ipt -A PSW $(comment "默认") -p udp -d $FAKE_IP ${udp_target}
+				[ "${USE_PROXY_LIST}" = "1" ] && add_port_rules "$udp_ipt -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_BLACK) ${udp_target}"
+				[ "${USE_GFW_LIST}" = "1" ] && add_port_rules "$udp_ipt -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_GFW) ${udp_target}"
+				[ "${CHN_LIST}" != "0" ] && add_port_rules "$udp_ipt -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_CHN) $(get_jump_ipt ${CHN_LIST} "${udp_target}")"
+				[ "${USE_SHUNT_NODE}" = "1" ] && add_port_rules "$udp_ipt -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_SHUNT) ${udp_target}"
+				[ "${UDP_PROXY_MODE}" != "disable" ] && add_port_rules "$udp_ipt -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "${udp_target}"
+				[ -z "${LAN_FORWARD}" ] && $ipt_m -A PSW $(comment "默认") -p udp $(REDIRECT $REDIR_PORT TPROXY)
 
-				[ "$PROXY_IPV6" = "1" ] && {
+				[ "$PROXY_IPV6" = "1" ] && [ -z "${LAN_FORWARD}" ] && {
 					[ "${USE_FAKEDNS}" = "1" ] && $ip6t_m -A PSW $(comment "默认") -p udp -d $FAKE_IP_6 -j PSW_RULE
 					[ "${USE_PROXY_LIST}" = "1" ] && add_port_rules "$ip6t_m -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_BLACK6) -j PSW_RULE"
 					[ "${USE_GFW_LIST}" = "1" ] && add_port_rules "$ip6t_m -A PSW $(comment "默认") -p udp" $UDP_REDIR_PORTS "$(dst $IPSET_GFW6) -j PSW_RULE"
