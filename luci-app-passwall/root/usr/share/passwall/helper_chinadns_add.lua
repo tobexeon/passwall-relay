@@ -613,6 +613,9 @@ if DEFAULT_TAG == "none" then
 end
 
 table.insert(config_lines, "hosts")
+table.insert(config_lines, "cache 4096")
+table.insert(config_lines, "cache-stale 86400")
+table.insert(config_lines, "cache-refresh 20")
 
 if DEFAULT_TAG == "chn" then
 	log(string.format("  - 默认 DNS ：%s", DNS_LOCAL))
