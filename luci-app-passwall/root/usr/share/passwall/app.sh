@@ -1173,6 +1173,24 @@ start_dns() {
 	TUN_DNS="127.0.0.1#${NEXT_DNS_LISTEN_PORT}"
 	[ -n "${NO_PLUGIN_DNS}" ] && TUN_DNS="127.0.0.1#${resolve_dns_port}"
 
+	# LAN 转发模式：本机不启动任何代理守护进程，过滤模式仅支持直连（tcp/udp；smartdns 额外支持 doh），
+	# 其他过滤模式（socks/dns2socks/sing-box/xray）依赖本地代理，一律强制归一为 tcp 直连并提示。
+	[ "${LAN_FORWARD}" = "1" ] && {
+		case "${DNS_MODE}" in
+			tcp|udp) ;;
+			doh)
+				[ "${DNS_SHUNT}" != "smartdns" ] && {
+					echolog "  * DoH 直连过滤模式仅在 SmartDNS 分流下可用，已强制归一为 TCP 直连。"
+					DNS_MODE="tcp"
+				}
+			;;
+			*)
+				echolog "  * LAN 转发模式下不支持 DNS 过滤模式[${DNS_MODE}]（本机无 socks/sing-box/xray 代理进程），已强制归一为 TCP 直连。"
+				DNS_MODE="tcp"
+			;;
+		esac
+	}
+
 	case "$DNS_MODE" in
 	dns2socks)
 		local dns2socks_socks_server=$(echo $(config_n_get @global[0] socks_server 127.0.0.1:1080) | sed "s/#/:/g")
@@ -1265,7 +1283,7 @@ start_dns() {
 		UDP_PROXY_DNS=1
 		local china_ng_listen_port=${NEXT_DNS_LISTEN_PORT}
 		local china_ng_trust_dns="udp://${REMOTE_DNS}"
-		if [ "$DNS_SHUNT" != "chinadns-ng" ] && [ "$FILTER_PROXY_IPV6" = "1" ]; then
+		if [ "$DNS_SHUNT" != "chinadns-ng" ] && [ "$DNS_SHUNT" != "smartdns" ] && [ "$FILTER_PROXY_IPV6" = "1" ]; then
 			DNSMASQ_FILTER_PROXY_IPV6=0
 			local no_ipv6_trust="-N"
 			ln_run "$(first_type chinadns-ng)" chinadns-ng "/dev/null" -b :: -l ${china_ng_listen_port} -t ${china_ng_trust_dns} -d gfw ${no_ipv6_trust}
@@ -1279,7 +1297,7 @@ start_dns() {
 		TCP_PROXY_DNS=1
 		local china_ng_listen_port=${NEXT_DNS_LISTEN_PORT}
 		local china_ng_trust_dns="tcp://${REMOTE_DNS}"
-		[ "$DNS_SHUNT" != "chinadns-ng" ] && {
+		[ "$DNS_SHUNT" != "chinadns-ng" ] && [ "$DNS_SHUNT" != "smartdns" ] && {
 			[ "$FILTER_PROXY_IPV6" = "1" ] && DNSMASQ_FILTER_PROXY_IPV6=0 && local no_ipv6_trust="-N"
 			ln_run "$(first_type chinadns-ng)" chinadns-ng "/dev/null" -b :: -l ${china_ng_listen_port} -t ${china_ng_trust_dns} -d gfw ${no_ipv6_trust}
 			echolog "  - ChinaDNS-NG(${TUN_DNS}) -> ${china_ng_trust_dns}"

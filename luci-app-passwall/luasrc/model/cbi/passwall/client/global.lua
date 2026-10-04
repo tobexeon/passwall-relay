@@ -118,6 +118,11 @@ if node_value then
 end
 current_node = current_node_id and m:get(current_node_id) or {}
 
+-- LAN Forward 节点判定：该模式下本机不启动任何代理守护进程，
+-- 过滤模式仅支持直连（dnsmasq/chinadns-ng: tcp/udp；smartdns 额外支持 doh），
+-- 隐藏 socks/dns2socks/sing-box/xray 等依赖本地代理进程的选项。
+local is_lanforward = (current_node.type or ""):lower() == "lanforward"
+
 -- Shunt Start
 if (has_singbox or has_xray) and #nodes_table > 0 then
 	if #normal_list > 0 or #iface_list > 0 then
@@ -270,14 +275,16 @@ o = s:taboption("DNS", ListValue, "dns_mode", translate("Filter Mode"))
 o.default = "tcp"
 o:value("udp", translatef("Requery DNS By %s", "UDP"))
 o:value("tcp", translatef("Requery DNS By %s", "TCP"))
-if api.is_finded("dns2socks") then
-	o:value("dns2socks", "dns2socks")
-end
-if has_singbox then
-	o:value("sing-box", "Sing-Box")
-end
-if has_xray then
-	o:value("xray", "Xray")
+if not is_lanforward then
+	if api.is_finded("dns2socks") then
+		o:value("dns2socks", "dns2socks")
+	end
+	if has_singbox then
+		o:value("sing-box", "Sing-Box")
+	end
+	if has_xray then
+		o:value("xray", "Xray")
+	end
 end
 o:depends({ dns_shunt = "chinadns-ng", _node_sel_other = "1" })
 o:depends({ dns_shunt = "dnsmasq", _node_sel_other = "1" })
@@ -298,12 +305,19 @@ end
 ---- SmartDNS Forward Mode
 if api.is_finded("smartdns") then
 	o = s:taboption("DNS", ListValue, "smartdns_dns_mode", translate("Filter Mode"))
-	o:value("socks", "Socks")
-	if has_singbox then
-		o:value("sing-box", "Sing-Box")
-	end
-	if has_xray then
-		o:value("xray", "Xray")
+	if is_lanforward then
+		-- LAN 转发模式：仅直连过滤模式（tcp/udp/doh），查询由防火墙 fwmark 策略路由走 LAN 转发出口
+		o:value("tcp", translatef("Requery DNS By %s", "TCP"))
+		o:value("udp", translatef("Requery DNS By %s", "UDP"))
+		o:value("doh", "DoH")
+	else
+		o:value("socks", "Socks")
+		if has_singbox then
+			o:value("sing-box", "Sing-Box")
+		end
+		if has_xray then
+			o:value("xray", "Xray")
+		end
 	end
 	o:depends({ dns_shunt = "smartdns", _node_sel_other = "1" })
 	o.write = function(self, section, value)
@@ -340,6 +354,12 @@ if api.is_finded("smartdns") then
 	o:value("https://doh.libredns.gr/dns-query,116.202.176.26")
 	o:value("https://doh.libredns.gr/ads,116.202.176.26")
 	o:depends({ dns_shunt = "smartdns", smartdns_dns_mode = "socks" })
+	if is_lanforward then
+		-- LAN 转发直连模式下同样需要显示远程 DNS 列表（tcp/udp/doh）
+		o:depends({ dns_shunt = "smartdns", smartdns_dns_mode = "tcp" })
+		o:depends({ dns_shunt = "smartdns", smartdns_dns_mode = "udp" })
+		o:depends({ dns_shunt = "smartdns", smartdns_dns_mode = "doh" })
+	end
 	o.cfgvalue = function(self, section)
 		return m:get(section, self.option) or {"tcp://1.1.1.1"}
 	end

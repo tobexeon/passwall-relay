@@ -183,6 +183,55 @@ if not REMOTE_GROUP or REMOTE_GROUP == "nil" then
 	sys.call('sed -i "/passwall/d" /etc/smartdns/custom.conf >/dev/null 2>&1')
 end
 
+-- LAN 转发直接模式（tcp/udp/doh）：远程 DNS 由本机直连，不经过任何本地代理，
+-- 出海靠防火墙 fwmark 标记 + 策略路由转发到下一跳网关。
+-- 此处将单条 REMOTE_DNS 解析为 smartdns server 行（不带 -proxy / -group，由调用方拼接）。
+local function build_direct_server_param(w)
+	local server_dns = api.trim(w)
+	local server_param
+
+	local dnsType = string.match(server_dns, "^(.-)://")
+	dnsType = dnsType and string.lower(dnsType) or nil
+	local dnsServer = string.match(server_dns, "://(.+)") or server_dns
+
+	if dnsType and dnsType ~= "" and dnsType ~= "udp" then
+		if dnsType == "tcp" then
+			server_param = "server-tcp " .. dnsServer
+		elseif dnsType == "tls" then
+			server_param = "server-tls " .. dnsServer
+		elseif dnsType == "quic" then
+			server_param = "server-quic " .. dnsServer
+		elseif dnsType == "https" or dnsType == "h3" then
+			local http_host = nil
+			local url = w
+			local port = 443
+			local s = api.split(w, ",")
+			if s and #s > 1 then
+				url = s[1]
+				local dns_ip = s[2]
+				local host_port = api.get_domain_from_url(s[1])
+				if host_port and #host_port > 0 then
+					http_host = host_port
+					local s2 = api.split(host_port, ":")
+					if s2 and #s2 > 1 then
+						http_host = s2[1]
+						port = s2[2]
+					end 
+					url = url:gsub(http_host, dns_ip)
+				end
+			end
+			server_dns = url
+			if http_host then
+				server_dns = server_dns .. " -http-host " .. http_host
+			end
+			server_param = (dnsType == "https" and "server-https " or "server-h3 ") .. server_dns
+		end
+	else
+		server_param = "server " .. dnsServer
+	end
+	return server_param
+end
+
 local force_https_soa = api.uci_get_c("@global[0]", "force_https_soa") or 0
 local proxy_server_name = "psw-proxy-server"
 config_lines = {
@@ -195,49 +244,7 @@ config_lines = {
 }
 if DNS_MODE == "socks" then
 	for w in string.gmatch(REMOTE_DNS, '[^|]+') do
-		local server_dns = api.trim(w)
-		local server_param
-
-		local dnsType = string.match(server_dns, "^(.-)://")
-		dnsType = dnsType and string.lower(dnsType) or nil
-		local dnsServer = string.match(server_dns, "://(.+)") or server_dns
-
-		if dnsType and dnsType ~= "" and dnsType ~= "udp" then
-			if dnsType == "tcp" then
-				server_param = "server-tcp " .. dnsServer
-			elseif dnsType == "tls" then
-				server_param = "server-tls " .. dnsServer
-			elseif dnsType == "quic" then
-				server_param = "server-quic " .. dnsServer
-			elseif dnsType == "https" or dnsType == "h3" then
-				local http_host = nil
-				local url = w
-				local port = 443
-				local s = api.split(w, ",")
-				if s and #s > 1 then
-					url = s[1]
-					local dns_ip = s[2]
-					local host_port = api.get_domain_from_url(s[1])
-					if host_port and #host_port > 0 then
-						http_host = host_port
-						local s2 = api.split(host_port, ":")
-						if s2 and #s2 > 1 then
-							http_host = s2[1]
-							port = s2[2]
-						end 
-						url = url:gsub(http_host, dns_ip)
-					end
-				end
-				server_dns = url
-				if http_host then
-					server_dns = server_dns .. " -http-host " .. http_host
-				end
-				server_param = (dnsType == "https" and "server-https " or "server-h3 ") .. server_dns
-			end
-		else
-			server_param = "server " .. dnsServer
-
-		end
+		local server_param = build_direct_server_param(w)
 
 		if not api.is_local_ip(w) then
 			server_param = server_param .. " -proxy " .. proxy_server_name
@@ -249,6 +256,18 @@ if DNS_MODE == "socks" then
 		end
 		table.insert(config_lines, server_param)
 	end
+elseif DNS_MODE == "tcp" or DNS_MODE == "udp" or DNS_MODE == "doh" then
+	-- LAN 转发直接模式：远程组上游直连（server-tcp/server-https/server），不加 -proxy，
+	-- 不生成 proxy-server；查询流量由 nftables OUTPUT 链打 fwmark 后经策略路由走 LAN 转发出口。
+	for w in string.gmatch(REMOTE_DNS, '[^|]+') do
+		local server_param = build_direct_server_param(w)
+		server_param = server_param .. " -group " .. REMOTE_GROUP .. " -exclude-default-group"
+		if SUBNET and SUBNET ~= "" and SUBNET ~= "0" then
+			server_param = server_param .. " -subnet " .. SUBNET
+		end
+		table.insert(config_lines, server_param)
+	end
+	log("  - SmartDNS 远程组(" .. string.upper(DNS_MODE) .. " 直连，经 LAN 转发) -> " .. REMOTE_GROUP)
 else
 	local server_param = string.format("server %s -group %s -exclude-default-group", TUN_DNS:gsub("#", ":"), REMOTE_GROUP)
 	table.insert(config_lines, server_param)
